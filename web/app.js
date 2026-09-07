@@ -100,7 +100,8 @@
           snap: snap,
           size: size,
           seedText: seedText,
-          sizeLabel: SIZE_LABEL[size]
+          sizeLabel: SIZE_LABEL[size],
+          cameraS: null // null = start at the whole-map overview (ticket 07)
         };
         pipe.reset('');
         layoutAndDraw();
@@ -132,17 +133,41 @@
     pipe.press(key);
   });
 
-  /* Whole-map overview camera (tickets 05-06). Ticket 07 swaps this for a zoom/pan one. */
+  /* One camera rule drives every level of zoom (ticket 07): aim at the avatar and clamp
+     to the map — which degenerates to centring the whole map when it still fits at the
+     current scale. Starting cameraS=null draws the whole-map overview; wheel zoom raises
+     it; movement acks redraw with the same scale, so the avatar stays centred while
+     zoomed and the world scrolls under it. */
   function layoutAndDraw() {
     if (!state) {
       return;
     }
     resizeCanvas();
+    var snap = state.snap;
     var vw = state.vw;
     var vh = state.vh;
-    state.view = View.overviewCamera(vw, vh, state.snap.width, state.snap.height);
-    Render.drawFrame(ctx, vw, vh, state.snap, state.view);
+    var fit = View.fitTileSize(vw, vh, snap.width, snap.height);
+    var s = state.cameraS == null ? fit : Math.max(state.cameraS, fit);
+    state.view = snap.avatar
+        ? View.followCamera(s, vw, vh, snap.width, snap.height, snap.avatar)
+        : View.overviewCamera(vw, vh, snap.width, snap.height);
+    Render.drawFrame(ctx, vw, vh, snap, state.view);
   }
+
+  window.addEventListener('wheel', function (ev) {
+    if (!state) {
+      return;
+    }
+    ev.preventDefault(); // also stops the browser's Ctrl+wheel page zoom (pinch scroll)
+    var snap = state.snap;
+    var cw = Math.max(1, CANVAS.clientWidth);
+    var ch = Math.max(1, CANVAS.clientHeight);
+    var fit = View.fitTileSize(cw, ch, snap.width, snap.height);
+    var ground = View.groundScale(cw, ch, snap.width, snap.height);
+    var cur = state.cameraS == null ? fit : Math.max(state.cameraS, fit);
+    state.cameraS = View.zoomStep(cur, ev.deltaY < 0, fit, ground, 1.25);
+    layoutAndDraw();
+  }, { passive: false });
 
   function resizeCanvas() {
     var dpr = window.devicePixelRatio || 1;
