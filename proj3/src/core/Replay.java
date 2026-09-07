@@ -84,7 +84,7 @@ public final class Replay {
     private static GameSnapshot.Legend[] legendFor(Iterable<TETile> tiles) {
         List<GameSnapshot.Legend> out = new ArrayList<>();
         for (TETile t : tiles) {
-            out.add(new GameSnapshot.Legend(t.id(), t.description(),
+            out.add(new GameSnapshot.Legend(t.id(), t.description(), Character.toString(t.character()),
                     hex(t.textColor()), hex(t.backgroundColor())));
         }
         out.sort(Comparator.comparingInt(l -> l.id));

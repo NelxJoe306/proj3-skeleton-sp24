@@ -53,6 +53,8 @@ public class ReplayApiTest {
         assertTrue(legend.size() > 0, "legend covers the tiles present");
         for (var entry : legend) {
             JsonObject l = entry.getAsJsonObject();
+            assertTrue(l.get("glyph") != null && l.get("glyph").getAsString().length() >= 1,
+                    "each legend entry carries the tile's glyph character");
             assertTrue(l.get("fg").getAsString().matches("#[0-9a-f]{6}"), "fg is #rrggbb");
             assertTrue(l.get("bg").getAsString().matches("#[0-9a-f]{6}"), "bg is #rrggbb");
         }

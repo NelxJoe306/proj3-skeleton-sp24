@@ -42,12 +42,16 @@ public final class GameSnapshot {
     public static final class Legend {
         public final int id;
         public final String name;
+        /** The exact character the engine renders for this tile (e.g. '@', '#', '·';
+         *  the void tile's glyph is a single space), so the client never hard-codes tiles. */
+        public final String glyph;
         public final String fg;
         public final String bg;
 
-        public Legend(int id, String name, String fg, String bg) {
+        public Legend(int id, String name, String glyph, String fg, String bg) {
             this.id = id;
             this.name = name;
+            this.glyph = glyph;
             this.fg = fg;
             this.bg = bg;
         }

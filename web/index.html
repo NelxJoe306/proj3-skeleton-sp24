@@ -1,15 +1,42 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>proj3C — BYOW in the browser</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <!-- Placeholder SPA shell: ticket 05 replaces this with the real menu + canvas client. -->
-  <main id="app">
-    <h1>proj3C</h1>
-    <p>Static hosting is up. The web client lands in ticket 05.</p>
-  </main>
+  <div id="stage">
+    <canvas id="world"></canvas>
+
+    <section id="menu" role="dialog" aria-label="主菜单">
+      <h1>proj3C <span class="sub">BYOW in the browser</span></h1>
+      <form id="new-game-form">
+        <fieldset>
+          <legend>地图尺寸 Size</legend>
+          <div class="size-options">
+            <label><input type="radio" name="size" value="small">小 40×40</label>
+            <label><input type="radio" name="size" value="medium" checked>中 80×80</label>
+            <label><input type="radio" name="size" value="large">大 120×120</label>
+          </div>
+        </fieldset>
+        <div class="field-row">
+          <label for="seed">种子 Seed（留空则随机）</label>
+          <input id="seed" name="seed" type="text" inputmode="numeric" autocomplete="off"
+                 placeholder="留空 = 随机">
+        </div>
+        <button type="submit">开始 New Game</button>
+        <p id="menu-error" class="error" hidden></p>
+      </form>
+      <p class="hint">WASD 移动 · 到达 ★ 过关（方向键 / 存档 将于后续加入）</p>
+    </section>
+
+    <div id="status" hidden></div>
+  </div>
+
+  <script src="view.js"></script>
+  <script src="render.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
