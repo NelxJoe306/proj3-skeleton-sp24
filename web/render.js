@@ -67,6 +67,39 @@
         }
       }
     }
+
+    if (snap.goal) {
+      drawGoalMarker(ctx, view, W, H, vis, snap.goal); // over tiles: still shows when the avatar stands on it
+    }
+  }
+
+  /* Gold ring around the goal cell (ticket 08). snap.goal is the goal *entity*
+     [x, y], reported separately from rows — so this keeps marking the goal even
+     when the avatar's tile has overlaid it on landing. Same integer-boundary cell
+     rect as drawFrame, so the ring hugs the tile at every (fractional) zoom. */
+  function drawGoalMarker(ctx, view, W, H, vis, goalXY) {
+    var gx = goalXY[0];
+    var row = View.mapYFromRow(goalXY[1], H); // engine y (bottom-origin) -> display row
+    if (gx < vis.col0 || gx > vis.col1 || row < vis.row0 || row > vis.row1) {
+      return;
+    }
+    var x0 = Math.floor(gx * view.s - view.camX);
+    var x1 = Math.floor((gx + 1) * view.s - view.camX);
+    var y0 = Math.floor(row * view.s - view.camY);
+    var y1 = Math.floor((row + 1) * view.s - view.camY);
+    var inset = Math.max(1, view.s * 0.18);
+    var rx = x0 + inset;
+    var ry = y0 + inset;
+    var rw = (x1 - x0) - 2 * inset;
+    var rh = (y1 - y0) - 2 * inset;
+    if (rw <= 0 || rh <= 0) {
+      return; // tile is sub-pixel at this zoom — nothing to ring
+    }
+    ctx.lineWidth = Math.max(1.5, view.s * 0.12);
+    ctx.strokeStyle = 'rgba(255, 216, 0, 0.35)';
+    ctx.strokeRect(rx, ry, rw, rh); // soft outer halo
+    ctx.strokeStyle = '#ffd800';
+    ctx.strokeRect(rx, ry, rw, rh);
   }
 
   var api = { drawFrame: drawFrame };

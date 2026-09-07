@@ -32,7 +32,16 @@
       <p class="hint">WASD 移动 · 到达 ★ 过关（方向键 / 存档 将于后续加入）</p>
     </section>
 
-    <div id="status" hidden></div>
+    <div id="hud" hidden>
+      <span id="hud-world" class="stat"></span>
+      <span id="hud-steps" class="stat"></span>
+      <span id="hud-dist" class="stat"></span>
+    </div>
+
+    <div id="banner" hidden>
+      <p id="banner-text"></p>
+      <button id="banner-again" type="button">返回主菜单 Menu</button>
+    </div>
   </div>
 
   <script src="view.js"></script>
