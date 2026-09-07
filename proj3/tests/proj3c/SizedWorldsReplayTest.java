@@ -30,6 +30,7 @@ public class SizedWorldsReplayTest {
 
     private static final int FLOOR = Tileset.FLOOR.id();
     private static final int AVATAR = Tileset.AVATAR.id();
+    private static final int GOAL = Tileset.GOAL.id();
 
     @Test
     void everyTierBuildsStructuredDeterministicWorlds() {
@@ -61,13 +62,19 @@ public class SizedWorldsReplayTest {
 
     // ------------------------------------------------------------- helpers
 
-    /** The legacy grid and the replay snapshot must describe the same cells, incl. avatar. */
+    /** The legacy grid and the replay snapshot must describe the same cells, incl. avatar.
+     *  The one allowed divergence: the 3C GOAL is a runtime entity overlaid on a legacy
+     *  FLOOR cell (it never sits on a wall/void), so a replay GOAL where legacy has FLOOR
+     *  still counts as structurally identical. */
     private static boolean sameGridAsLegacy(GameSnapshot snap, TETile[][] legacy) {
         assertEquals(legacy.length, snap.width);
         assertEquals(legacy[0].length, snap.height);
         for (int y = 0; y < snap.height; y++) {
             for (int x = 0; x < snap.width; x++) {
-                if (legacy[x][y].id() != snap.rows[y][x]) {
+                int id = snap.rows[y][x];
+                int legacyId = legacy[x][y].id();
+                boolean goalOverlay = id == GOAL && legacyId == FLOOR;
+                if (id != legacyId && !goalOverlay) {
                     return false;
                 }
             }
@@ -184,6 +191,6 @@ public class SizedWorldsReplayTest {
     }
 
     private static boolean isFloorId(int id) {
-        return id == FLOOR || id == AVATAR;
+        return id == FLOOR || id == AVATAR || id == GOAL; // GOAL is ground the avatar can traverse
     }
 }

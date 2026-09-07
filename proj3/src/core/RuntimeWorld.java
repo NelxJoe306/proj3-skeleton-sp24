@@ -30,26 +30,40 @@ public final class RuntimeWorld {
     private final TETile[][] grid;
     private int avatarX = -1;
     private int avatarY = -1;
+    private int goalX = -1;
+    private int goalY = -1;
+    private boolean won = false;
 
     private RuntimeWorld(long seed, TETile[][] grid) {
         this.seed = seed;
         this.grid = grid;
     }
 
-    /** Builds a fresh runtime world for a seed at the default (MEDIUM) size. */
+    /** Builds a fresh runtime world for a seed at the default (MEDIUM) size.
+     *  This is the legacy seam entry: it installs <em>no</em> goal, so the frozen
+     *  {@link AutograderBuddy#getWorldFromInput} grid never contains a GOAL tile. */
     public static RuntimeWorld start(long seed) {
-        return start(seed, World.DEFAULT_WIDTH, World.DEFAULT_HEIGHT);
+        return build(seed, World.DEFAULT_WIDTH, World.DEFAULT_HEIGHT, false);
     }
 
     /**
      * Builds a fresh runtime world for a seed at explicit dimensions (3C size tiers),
-     * spawning the avatar in the first generated room. Identical replay semantics to
-     * {@link #start(long)}; the structure layer is a pure function of (seed, width, height).
+     * spawning the avatar in the first generated room and stamping the 3C goal in the
+     * last. Replay semantics are identical to {@link #start(long)}; the structure
+     * layer is a pure function of (seed, width, height). Only this sized entry —
+     * reached exclusively through the 3C {@link Replay} seam — carries the goal.
      */
     public static RuntimeWorld start(long seed, int width, int height) {
+        return build(seed, width, height, true);
+    }
+
+    private static RuntimeWorld build(long seed, int width, int height, boolean withGoal) {
         WorldGenerator.Layout layout = WorldGenerator.layout(seed, width, height);
         RuntimeWorld world = new RuntimeWorld(seed, layout.tiles);
         world.spawnAtFirstRoomCenter(layout.rooms);
+        if (withGoal) {
+            world.stampGoal(layout.rooms);
+        }
         return world;
     }
 
@@ -139,6 +153,9 @@ public final class RuntimeWorld {
         avatarX = x;
         avatarY = y;
         grid[avatarX][avatarY] = Tileset.AVATAR;
+        if (avatarX == goalX && avatarY == goalY) {
+            won = true; // a loaded position on the goal is a finished game
+        }
     }
 
     /** An 80×80 world of NOTHING with no avatar — the "no save" result. */
@@ -155,6 +172,16 @@ public final class RuntimeWorld {
     /** The current {@code @} position, or {@code null} if no avatar has been placed. */
     int[] avatar() {
         return avatarX < 0 ? null : new int[]{avatarX, avatarY};
+    }
+
+    /** The stamped goal's position, or {@code null} on worlds without a goal (legacy path). */
+    int[] goal() {
+        return goalX < 0 ? null : new int[]{goalX, goalY};
+    }
+
+    /** True once the avatar has stepped onto the goal; movement is frozen from then on. */
+    boolean won() {
+        return won;
     }
 
     /** The world snapshot as callers see it: structure + live avatar. */
@@ -196,6 +223,9 @@ public final class RuntimeWorld {
 
     /** One turn for one key. Every recognized key maps to exactly one action. */
     private void step(char key) {
+        if (won) {
+            return; // the avatar reached the goal: movement keys are frozen (':Q' still saves)
+        }
         switch (key) {
             case 'w':
             case 'W':
@@ -237,6 +267,9 @@ public final class RuntimeWorld {
         avatarX = nx;
         avatarY = ny;
         grid[avatarX][avatarY] = Tileset.AVATAR;
+        if (avatarX == goalX && avatarY == goalY) {
+            won = true; // stepping onto the goal finishes the game
+        }
     }
 
     private void spawnAtFirstRoomCenter(List<WorldGenerator.Rect> rooms) {
@@ -253,11 +286,70 @@ public final class RuntimeWorld {
         }
     }
 
-    /** True if (x, y) is an in-bounds ground tile an entity may stand on. */
+    /**
+     * Stamps the GOAL entity at the most recently generated room's centre. The spot is
+     * a pure, deterministic function of (seed, size) — the goal is a runtime entity,
+     * never part of the structure layer and never persisted (it re-derives on load).
+     * When the centre is the avatar's spawn or not a bare FLOOR (e.g. a single room
+     * whose centre the avatar already covers), it relocates to the nearest bare FLOOR
+     * by expanding square rings, so the goal always ends up a ground tile distinct
+     * from the avatar.
+     */
+    private void stampGoal(List<WorldGenerator.Rect> rooms) {
+        if (rooms.isEmpty()) {
+            return;
+        }
+        WorldGenerator.Rect room = rooms.get(rooms.size() - 1);
+        int cx = room.x + room.w / 2;
+        int cy = room.y + room.h / 2;
+        if (!isBareFloor(cx, cy)) {
+            int[] near = nearestBareFloor(cx, cy);
+            if (near == null) {
+                return; // no ground anywhere: leave the world goal-less (never with real layouts)
+            }
+            cx = near[0];
+            cy = near[1];
+        }
+        goalX = cx;
+        goalY = cy;
+        grid[cx][cy] = Tileset.GOAL;
+    }
+
+    /** True if (x, y) is in-bounds and an untouched FLOOR cell (no entity over it). */
+    private boolean isBareFloor(int x, int y) {
+        if (x < 0 || y < 0 || x >= grid.length || y >= grid[0].length) {
+            return false;
+        }
+        return grid[x][y].id() == Tileset.FLOOR.id();
+    }
+
+    /**
+     * The nearest bare FLOOR to (cx, cy), searched as expanding square rings in a fixed
+     * row-major order — a deterministic relocation for the goal, independent of any
+     * runtime RNG (ADR-0003). The avatar's own cell is not bare FLOOR, so it is skipped.
+     */
+    private int[] nearestBareFloor(int cx, int cy) {
+        int maxR = Math.max(grid.length, grid[0].length);
+        for (int r = 0; r <= maxR; r++) {
+            for (int y = cy - r; y <= cy + r; y++) {
+                for (int x = cx - r; x <= cx + r; x++) {
+                    if (Math.max(Math.abs(x - cx), Math.abs(y - cy)) == r && isBareFloor(x, y)) {
+                        return new int[]{x, y};
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /** True if (x, y) is an in-bounds ground tile an entity may stand on.
+     *  The runtime treats the 3C GOAL as ground so the avatar can step onto it —
+     *  without touching the frozen {@link AutograderBuddy#isGroundTile} list. */
     private boolean walkable(int x, int y) {
         if (x < 0 || y < 0 || x >= grid.length || y >= grid[0].length) {
             return false;
         }
-        return AutograderBuddy.isGroundTile(grid[x][y]);
+        TETile tile = grid[x][y];
+        return AutograderBuddy.isGroundTile(tile) || tile.id() == Tileset.GOAL.id();
     }
 }

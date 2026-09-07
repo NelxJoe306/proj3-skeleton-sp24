@@ -45,25 +45,25 @@ public final class Replay {
         int height = grid[0].length;
         int[][] rows = new int[height][width];
         Map<Integer, TETile> seen = new HashMap<>();
-        int[] avatar = null;
-        int[] goal = null;
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 TETile tile = grid[x][y];
                 int id = tile.id();
                 rows[y][x] = id;
                 seen.putIfAbsent(id, tile);
-                if (id == Tileset.AVATAR.id()) {
-                    avatar = new int[]{x, y};
-                } else if (id == Tileset.GOAL.id()) {
-                    goal = new int[]{x, y};
-                }
             }
+        }
+        // The avatar/goal are world entities, not grid tiles: once the avatar steps
+        // onto the goal its AVATAR tile covers the GOAL tile, yet the goal must stay
+        // reported (and stay in the legend) so the client keeps drawing the objective.
+        int[] avatar = world.avatar();
+        int[] goal = world.goal();
+        boolean won = world.won();
+        if (goal != null) {
+            seen.putIfAbsent(Tileset.GOAL.id(), Tileset.GOAL);
         }
 
         GameSnapshot.Legend[] legend = legendFor(seen.values());
-        boolean won = avatar != null && goal != null
-                && avatar[0] == goal[0] && avatar[1] == goal[1];
         return new GameSnapshot(width, height, seed, won, saveMissing, avatar, goal, rows, legend);
     }
 
