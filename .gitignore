@@ -41,6 +41,9 @@
 # Generated files
 **/.idea/**/contentModel.xml
 
+# 3C runtime save file (the replay server writes this to its CWD on :Q)
+save.txt
+
 # Sensitive or high-churn files
 **/.idea/**/dataSources/
 **/.idea/**/dataSources.ids

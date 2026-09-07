@@ -53,6 +53,54 @@ body {
   margin-left: 8px;
 }
 
+/* resume (Continue / Load) and New Game share the card */
+.resume-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+#menu button.secondary {
+  flex: 1;
+  margin-top: 0;
+  background: #18222f;
+  color: #cfe0f4;
+  border: 1px solid #2a3648;
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+#menu button.secondary:hover {
+  background: #223046;
+  border-color: #4a658a;
+}
+
+#menu button.secondary.off {
+  opacity: 0.45;
+  cursor: default;
+}
+
+#menu button.secondary.off:hover {
+  background: #18222f;
+  border-color: #2a3648;
+}
+
+.resume-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #6f8198;
+  line-height: 1.5;
+}
+
+.divider {
+  height: 1px;
+  background: #26303d;
+  margin: 16px 0 0;
+}
+
 #menu form {
   margin-top: 6px;
 }
@@ -178,6 +226,41 @@ body {
 
 #hud #hud-dist {
   border-color: #3a4350;
+}
+
+/* --- in-game save/quit controls (top-right) ------------------------------ */
+#game-btns {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 4;
+  display: flex;
+  gap: 8px;
+}
+
+#game-btns button {
+  background: rgba(20, 28, 38, 0.82);
+  color: #dbe6f3;
+  border: 1px solid #2a3648;
+  border-radius: 999px;
+  padding: 5px 13px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+#game-btns button:hover {
+  background: #24344a;
+  border-color: #4a658a;
+}
+
+#game-btns button.danger:hover {
+  border-color: #8a3a3a;
+  color: #ffb0a8;
+}
+
+#game-btns button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* --- win banner --------------------------------------------------------- */
