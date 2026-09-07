@@ -6,8 +6,7 @@ import tileengine.Tileset;
 public class AutograderBuddy {
 
     /** A leading seed prefix: `N<digits>S` (case-insensitive). Characters after the
-     *  trailing S are ignored for now — they are future interactivity/save commands
-     *  (3B), not part of the seed. */
+     *  trailing S are the command stream (3B), not part of the seed. */
     private static final java.util.regex.Pattern SEED_FORM =
             java.util.regex.Pattern.compile("^[nN]([0-9]+)[sS].*$");
 
@@ -24,8 +23,31 @@ public class AutograderBuddy {
      * @return the 2D TETile[][] representing the state of the world
      */
     public static TETile[][] getWorldFromInput(String input) {
+        if (input != null && !input.isEmpty()
+                && (input.charAt(0) == 'L' || input.charAt(0) == 'l')) {
+            // A load string: continue the world stored by a previous ':Q', then run
+            // the keys that follow the L. No save present -> the empty world (no error).
+            RuntimeWorld world = RuntimeWorld.load();
+            world.type(input.substring(1));
+            return world.snapshot();
+        }
         long seed = parseSeed(input);
-        return World.generate(seed).tiles();
+        RuntimeWorld world = RuntimeWorld.start(seed);
+        world.type(afterSeedPrefix(input));
+        return world.snapshot();
+    }
+
+    /**
+     * The characters after the validated {@code N<digits>S} prefix of {@code input}
+     * — the command stream. Requires {@link #parseSeed} to have accepted the string
+     * first, so the prefix is guaranteed present and well-formed.
+     */
+    private static String afterSeedPrefix(String input) {
+        int i = 1; // skip leading N / n
+        while (i < input.length() && Character.isDigit(input.charAt(i))) {
+            i++;
+        }
+        return input.substring(i + 1); // skip trailing S / s
     }
 
     /**

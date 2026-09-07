@@ -16,8 +16,21 @@
 - **runtime state** — 不由 seed 推出的可变状态：玩家位置、被触发的门、时刻、天气、进度。**属于存档**。
 - **save slot** — `seed` + 一份 runtime state 快照。world 从不整图存储，而是由 seed 重建。
 - **objective** — 闯关玩法里玩家要寻找的目标/出口（未来）。
+- **avatar** — 玩家在运行时世界里的标记（`@`，Tileset.AVATAR），压在可通行的地板上、随按键一格一格移动；属于 entity/mechanism 层的运行时对象，不是 structure。
+- **command stream** — `getWorldFromInput` 收到的、`N<seed>S` 之后的一串按键字符；kernel 每遇到一个可识别字符走一步。W/A/S/D = 上/左/下/右（大小写均可）。
+- **runtime world** — 当前可玩状态：结构层网格 + 叠在其上的运行时对象（现只有 avatar）。`getWorldFromInput` 返回的网格就是它的快照。
+- **turn** — 一个可识别按键对 kernel 触发的一步移动/动作；系统禁绝依赖真实时间的机制（回合制）。
+- **size（尺寸档）** — 世界网格的宽×高；3C 起由玩家开局时选 小/中/大（40×40 / 80×80 / 120×120）。遗留的 `N…S` 输入（不带尺寸）恒产出中档 80×80；**尺寸是会话级参数、不由 seed 决定**，因此必须随存档记录。
+- **goal / objective** — 玩家要找到并让 avatar 踏上的运行时对象：确定性盖在**最晚生成房间中心**的 FLOOR 上（entity 层，永不经由结构生成）；位置是 (seed, size) 的纯函数，故无需存进存档，读档重建即得。
+- **win / 过关（胜利冻结）** — avatar 踏上 goal 即赢；此后移动键被忽略、avatar 停在 goal 上。赢态可从快照推出：avatar 所在格 = goal 格。
+- **HUD（客户端叠加）** — 浏览器画出的辅助层：到 goal 的直线距离（冷热）、移动步数、胜利横幅。
+- **viewport / 镜头** — 浏览器 Canvas 的视口变换：以 avatar 为中心的镜头跟随 + 滚轮缩放（全图一屏 ↔ 贴地）；纯客户端呈现，不影响游戏状态；窗口缩放只是 canvas 响应式重排。
+- **stateless replay server** — 3C 的 web 后端形态：服务端不持有会话，每次请求由「会话串」（size+seed+已按按键，或 读档+已按按键）纯函数式重建 runtime world 快照返回；浏览器每按一键全量重放。引擎仍是唯一真相源、输入来源无关。
+- **session string / 会话串** — 浏览器持有的、完整决定当前一局的表示；stateless replay 服务与本地 headless 测试共用同一重放语义，故两者永不分叉。
 
 ## 关键区分
 
 - **结构**（seed → 完全确定）vs **运行时状态**（可变，随存档走）——两者永不混写。
 - **structure layer**（3A，规范 tile）vs **presentation layer**（主题/氛围，后加）——theme 永远不反向影响结构。
+- **输入来源无关**：kernel 只认 command stream 语义，不关心按键来自 autograder 字符串、StdDraw 还是未来 web——三者共用同一套 move/save/load 规则。
+- **会话参数 vs 按键文法**：地图尺寸（及未来的存档槽）是"开一局"便固定的会话级参数，经会话/存档携带；command stream 的字母永远只表达单回合动作——两者正交，尺寸不进按键语义。

@@ -12,11 +12,28 @@ import java.awt.Font;
  * allowing scrolling of the screen or tracking the avatar or something similar.
  */
 public class TERenderer {
-    private static final int TILE_SIZE = 16;
+    /** Default pixel side length of one tile. */
+    public static final int DEFAULT_TILE_SIZE = 16;
+    private int tileSize = DEFAULT_TILE_SIZE;
     private int width;
     private int height;
     private int xOffset;
     private int yOffset;
+
+    /**
+     * Overrides the pixel size of one tile, so a window can be sized to fit the
+     * whole world on a given screen. Call before {@link #initialize}. Defaults to
+     * {@value #DEFAULT_TILE_SIZE} pixels, which keeps unmodified callers' behaviour
+     * unchanged.
+     *
+     * @param px side length of one tile in pixels
+     */
+    public void setTileSize(int px) {
+        if (px < 1) {
+            throw new IllegalArgumentException("tile size must be >= 1, got " + px);
+        }
+        this.tileSize = px;
+    }
 
     /**
      * Same functionality as the other initialization method. The only difference is that the xOff
@@ -32,7 +49,7 @@ public class TERenderer {
         this.height = h;
         this.xOffset = xOff;
         this.yOffset = yOff;
-        StdDraw.setCanvasSize(width * TILE_SIZE, height * TILE_SIZE);
+        StdDraw.setCanvasSize(width * tileSize, height * tileSize);
         resetFont();
         StdDraw.setXscale(0, width);
         StdDraw.setYscale(0, height);
@@ -111,7 +128,7 @@ public class TERenderer {
      * if you changed the pen settings.
      */
     public void resetFont() {
-        Font font = new Font("Monaco", Font.BOLD, TILE_SIZE - 2);
+        Font font = new Font("Monaco", Font.BOLD, Math.max(1, tileSize - 2));
         StdDraw.setFont(font);
     }
 }
