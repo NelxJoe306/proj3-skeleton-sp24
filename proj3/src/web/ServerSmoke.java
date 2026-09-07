@@ -42,6 +42,41 @@ public final class ServerSmoke {
             checkPost("/api/replay",
                     "{\"kind\":\"load\"}",
                     200, "\"saveMissing\":true", "load with no save reports saveMissing");
+
+            // Ticket 10 — the whole 3C path over HTTP: every tier answers with its own
+            // dimensions, identical sessions replay to byte-identical bodies, and a
+            // save-and-quit followed by load+more reproduces the uninterrupted session.
+            String[][] tiers = {{"small", "40"}, {"medium", "80"}, {"large", "120"}};
+            for (String[] tier : tiers) {
+                checkPost("/api/replay",
+                        "{\"kind\":\"new\",\"size\":\"" + tier[0] + "\",\"seed\":42,\"keys\":\"\"}",
+                        200, "\"width\":" + tier[1],
+                        "fresh " + tier[0] + " world reports width " + tier[1]);
+            }
+
+            String det = "{\"kind\":\"new\",\"size\":\"medium\",\"seed\":123,\"keys\":\"WASD\"}";
+            check("determinism: identical sessions replay to identical bodies",
+                    postBody("/api/replay", det).equals(postBody("/api/replay", det)),
+                    "two identical POSTs disagreed");
+
+            new File("save.txt").delete();
+            int[] saveStatus = new int[1];
+            http("POST", "/api/replay",
+                    "{\"kind\":\"new\",\"size\":\"small\",\"seed\":7,\"keys\":\"W:Q\"}", saveStatus);
+            check("save-and-quit over HTTP writes the save file",
+                    saveStatus[0] == 200 && new File("save.txt").exists(),
+                    "status " + saveStatus[0]);
+
+            String loaded = postBody("/api/replay", "{\"kind\":\"load\",\"keys\":\"WAASSDD\"}");
+            check("load+more resumes without saveMissing",
+                    !loaded.contains("\"saveMissing\":true"),
+                    loaded.contains("\"saveMissing\":true") ? "save reported missing" : "bad shape");
+
+            String uninterrupted = postBody("/api/replay",
+                    "{\"kind\":\"new\",\"size\":\"small\",\"seed\":7,\"keys\":\"WWAASSDD\"}");
+            check("session continuation holds over the wire: load+more == uninterrupted",
+                    loaded.equals(uninterrupted), "bodies differ");
+            new File("save.txt").delete(); // leave the tree clean
             System.out.println(failures == 0 ? "SMOKE OK"
                     : "SMOKE FAILED (" + failures + " checks failed)");
         } finally {
@@ -66,6 +101,11 @@ public final class ServerSmoke {
         String body = http("POST", path, json, status);
         check(label, status[0] == wantStatus && body.contains(mustContain),
                 "got status " + status[0] + ": " + abbreviate(body));
+    }
+
+    /** POST and return the raw body, letting the caller assert on full-body equality. */
+    private static String postBody(String path, String json) throws IOException {
+        return http("POST", path, json, new int[1]);
     }
 
     private static void check(String label, boolean ok, String detail) {
