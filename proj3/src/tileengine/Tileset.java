@@ -34,6 +34,9 @@ public class Tileset {
     public static final TETile TREE = new TETile('♠', Color.green, Color.black, "tree", 11);
 
     public static final TETile CELL = new TETile('█', Color.white, Color.black, "cell", 12);
+
+    /** The objective the avatar must reach (3C runtime entity, never structure). */
+    public static final TETile GOAL = new TETile('★', new Color(255, 216, 0), Color.black, "goal", 13);
 }
 
 

@@ -117,6 +117,22 @@ public class TETile {
         return character;
     }
 
+    /** Foreground (glyph) color of the tile. Exposed so non-StdDraw presenters
+     * (e.g. the web legend) can serialize the palette; drawing still happens in
+     * {@link #draw(double, double)}.
+     * @return text color of the tile
+     */
+    public Color textColor() {
+        return textColor;
+    }
+
+    /** Background color of the tile. See {@link #textColor()}.
+     * @return background color of the tile
+     */
+    public Color backgroundColor() {
+        return backgroundColor;
+    }
+
     /**
      * Description of the tile. Useful for displaying mouseover text or
      * testing that two tiles represent the same type of thing.

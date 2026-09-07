@@ -36,10 +36,18 @@ public final class RuntimeWorld {
         this.grid = grid;
     }
 
-    /** Builds a fresh runtime world for a seed, spawning the avatar in the first room. */
+    /** Builds a fresh runtime world for a seed at the default (MEDIUM) size. */
     public static RuntimeWorld start(long seed) {
-        WorldGenerator.Layout layout =
-                WorldGenerator.layout(seed, World.DEFAULT_WIDTH, World.DEFAULT_HEIGHT);
+        return start(seed, World.DEFAULT_WIDTH, World.DEFAULT_HEIGHT);
+    }
+
+    /**
+     * Builds a fresh runtime world for a seed at explicit dimensions (3C size tiers),
+     * spawning the avatar in the first generated room. Identical replay semantics to
+     * {@link #start(long)}; the structure layer is a pure function of (seed, width, height).
+     */
+    public static RuntimeWorld start(long seed, int width, int height) {
+        WorldGenerator.Layout layout = WorldGenerator.layout(seed, width, height);
         RuntimeWorld world = new RuntimeWorld(seed, layout.tiles);
         world.spawnAtFirstRoomCenter(layout.rooms);
         return world;

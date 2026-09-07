@@ -27,10 +27,14 @@ public final class WorldGenerator {
 
     /** Width of the all-NOTHING border around the whole grid. */
     private static final int OUTER_VOID = 2;
-    /** Smallest side length a leaf may keep after a split. */
-    private static final int MIN_LEAF = 20;
-    /** An axis is split further only while it is at least this long, so leaves end up in [MIN_LEAF, SPLIT_DIM]. */
-    private static final int SPLIT_DIM = 2 * MIN_LEAF + 1;
+    /** Minimum leaf side for the 80×80 (MEDIUM) canvas — the historic baseline,
+     *  kept byte-identical so today's 3A layouts never change. */
+    private static final int MEDIUM_MIN_LEAF = 20;
+    /** Minimum leaf side for canvases too small to split at the MEDIUM density
+     *  (the 40×40 tier), so their interior still subdivides into several rooms. */
+    private static final int SMALL_MIN_LEAF = 11;
+    /** Interior side length below which the SMALL density is used. */
+    private static final int SMALL_INTERIOR_CAP = 49;
     /** Room floor side is never smaller than this. */
     private static final int MIN_ROOM = 5;
     /** Gutter (NOTHING) width left on each side of a room inside its leaf. */
@@ -90,12 +94,25 @@ public final class WorldGenerator {
             }
         }
         Random rng = new Random(seed);
+        int inner = Math.min(width - 2 * OUTER_VOID, height - 2 * OUTER_VOID);
+        int minLeaf = minLeafFor(inner);
         List<Rect> leaves = new ArrayList<>();
         List<Rect> rooms = new ArrayList<>();
         split(rng, tiles, leaves, rooms, OUTER_VOID, OUTER_VOID,
-                width - 2 * OUTER_VOID, height - 2 * OUTER_VOID);
+                width - 2 * OUTER_VOID, height - 2 * OUTER_VOID, minLeaf);
         connectRooms(tiles, leaves, rooms, rng);
         return new Layout(tiles, leaves, rooms);
+    }
+
+    /**
+     * BSP leaf density for a canvas interior side of {@code inner}: a pure function
+     * of the size tier only (never of the seed, ADR-0002/0003). Canvases at the
+     * MEDIUM 80×80 interior length keep the historic 20, so their layouts are
+     * byte-identical; smaller canvases drop to 11 so the interior still subdivides
+     * instead of collapsing into one room.
+     */
+    private static int minLeafFor(int inner) {
+        return inner < SMALL_INTERIOR_CAP ? SMALL_MIN_LEAF : MEDIUM_MIN_LEAF;
     }
 
     /**
@@ -104,9 +121,10 @@ public final class WorldGenerator {
      * one axis at a random offset, leaving children no smaller than MIN_LEAF.
      */
     private static void split(Random rng, TETile[][] tiles, List<Rect> leaves, List<Rect> rooms,
-                              int x, int y, int w, int h) {
-        boolean canVertical = w >= SPLIT_DIM;
-        boolean canHorizontal = h >= SPLIT_DIM;
+                              int x, int y, int w, int h, int minLeaf) {
+        int splitDim = 2 * minLeaf + 1; // an axis splits while it can yield two leaves ≥ minLeaf
+        boolean canVertical = w >= splitDim;
+        boolean canHorizontal = h >= splitDim;
 
         boolean vertical;
         if (canVertical && canHorizontal) {
@@ -121,13 +139,13 @@ public final class WorldGenerator {
         }
 
         if (vertical) {
-            int cut = MIN_LEAF + rng.nextInt(w - 2 * MIN_LEAF);
-            split(rng, tiles, leaves, rooms, x, y, cut, h);
-            split(rng, tiles, leaves, rooms, x + cut, y, w - cut, h);
+            int cut = minLeaf + rng.nextInt(w - 2 * minLeaf);
+            split(rng, tiles, leaves, rooms, x, y, cut, h, minLeaf);
+            split(rng, tiles, leaves, rooms, x + cut, y, w - cut, h, minLeaf);
         } else {
-            int cut = MIN_LEAF + rng.nextInt(h - 2 * MIN_LEAF);
-            split(rng, tiles, leaves, rooms, x, y, w, cut);
-            split(rng, tiles, leaves, rooms, x, y + cut, w, h - cut);
+            int cut = minLeaf + rng.nextInt(h - 2 * minLeaf);
+            split(rng, tiles, leaves, rooms, x, y, w, cut, minLeaf);
+            split(rng, tiles, leaves, rooms, x, y + cut, w, h - cut, minLeaf);
         }
     }
 
