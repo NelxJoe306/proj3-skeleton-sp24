@@ -74,12 +74,23 @@ public final class RuntimeWorld {
 
     /**
      * Loads a V1 save from {@link #SAVE_FILE_NAME} and returns the world it describes:
-     * the seed's structure rebuilt from the seed (never a pasted map), with the avatar
-     * placed at the recorded position, ready to accept further commands. A missing file,
-     * a version above V1, or unreadable/malformed contents all yield an empty world
-     * (all NOTHING, no avatar) rather than an error.
+     * the seed's structure rebuilt from the seed (never a pasted map), sized by the
+     * optional {@code size=WxH} line (absent ⇒ MEDIUM 80×80), with the avatar placed at
+     * the recorded position, ready to accept further commands. A missing file, a version
+     * above V1, or unreadable/malformed contents all yield an empty world (all NOTHING,
+     * no avatar) rather than an error.
+     *
+     * <p>The no-argument form is the legacy {@code L} seam and installs <em>no</em>
+     * goal, keeping its output byte-identical to before. The 3C {@link Replay} seam
+     * uses {@link #load(boolean)} with {@code withGoal=true} so a continued game still
+     * has its objective (re-derived from seed+size — ADR-0005).
      */
     public static RuntimeWorld load() {
+        return load(false);
+    }
+
+    /** {@link #load()} with an explicit choice of whether to re-stamp the 3C goal. */
+    static RuntimeWorld load(boolean withGoal) {
         if (!FileUtils.fileExists(SAVE_FILE_NAME)) {
             return emptyWorld();
         }
@@ -104,6 +115,8 @@ public final class RuntimeWorld {
 
         Long seed = null;
         int[] avatar = null;
+        int width = World.DEFAULT_WIDTH;
+        int height = World.DEFAULT_HEIGHT;
         for (String line : lines) {
             String t = line.trim();
             if (t.startsWith("seed=")) {
@@ -114,17 +127,44 @@ public final class RuntimeWorld {
                 }
             } else if (t.startsWith("avatar=")) {
                 avatar = parseCoordinate(t.substring("avatar=".length()).trim());
+            } else if (t.startsWith("size=")) {
+                int[] dims = parseSize(t.substring("size=".length()).trim());
+                if (dims != null) {
+                    width = dims[0];
+                    height = dims[1];
+                }
             }
         }
         if (seed == null) {
             return emptyWorld();
         }
 
-        RuntimeWorld world = start(seed);
+        RuntimeWorld world = build(seed, width, height, withGoal);
         if (avatar != null) {
             world.teleport(avatar[0], avatar[1]);
         }
         return world;
+    }
+
+    /** Parses {@code WxH} (e.g. {@code 120x120}) into {width, height}, or {@code null} if malformed. */
+    private static int[] parseSize(String s) {
+        int x = s.indexOf('x');
+        if (x < 0) {
+            x = s.indexOf('X');
+        }
+        if (x < 0) {
+            return null;
+        }
+        try {
+            int w = Integer.parseInt(s.substring(0, x).trim());
+            int h = Integer.parseInt(s.substring(x + 1).trim());
+            if (w <= 0 || h <= 0 || w > 1000 || h > 1000) {
+                return null; // absurd dims are treated as absent
+            }
+            return new int[]{w, h};
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private static int[] parseCoordinate(String s) {
@@ -212,10 +252,18 @@ public final class RuntimeWorld {
         }
     }
 
-    /** Writes the current state as a V1 save file (a pure side effect). */
+    /**
+     * Writes the current state as a V1 save file (a pure side effect). The header is
+     * always {@code V1}; a {@code size=WxH} line is added only when the world is not
+     * the MEDIUM 80×80 default, so 80×80 files are byte-identical to the 3B era. The
+     * goal never persists — each load re-derives it from seed+size (ADR-0005).
+     */
     private void save() {
         StringBuilder sb = new StringBuilder();
         sb.append(SAVE_VERSION).append('\n');
+        if (grid.length != World.DEFAULT_WIDTH || grid[0].length != World.DEFAULT_HEIGHT) {
+            sb.append("size=").append(grid.length).append('x').append(grid[0].length).append('\n');
+        }
         sb.append("seed=").append(seed).append('\n');
         sb.append("avatar=").append(avatarX).append(',').append(avatarY).append('\n');
         FileUtils.writeFile(SAVE_FILE_NAME, sb.toString());

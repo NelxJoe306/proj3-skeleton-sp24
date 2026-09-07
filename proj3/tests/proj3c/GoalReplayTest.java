@@ -111,6 +111,36 @@ public class GoalReplayTest {
     }
 
     @Test
+    void loadingAWinSaveStaysWonOnTheGoal() {
+        long seed = 42;
+        GameSnapshot fresh = Replay.replay(Session.newGame(WorldSize.medium, seed));
+        String path = pathToGoal(fresh);
+        assertNotNull(path);
+
+        new File(RuntimeWorld.SAVE_FILE_NAME).delete();
+        Replay.replay(Session.newGame(WorldSize.medium, seed).withKeys(path + ":Q"));
+        GameSnapshot loaded = Replay.replay(Session.load());
+        assertTrue(loaded.won, "a reloaded win must still read won");
+        assertArrayEquals(fresh.goal, loaded.avatar, "avatar reloads onto the goal");
+        assertArrayEquals(fresh.goal, loaded.goal, "goal re-derives to the same cell");
+        assertFalse(loaded.saveMissing, "a real save is not reported missing");
+    }
+
+    @Test
+    void loadingAPausedGameReStampsTheGoalElsewhere() {
+        long seed = 7;
+        WorldSize size = WorldSize.small;
+        GameSnapshot fresh = Replay.replay(Session.newGame(size, seed));
+        new File(RuntimeWorld.SAVE_FILE_NAME).delete();
+        Replay.replay(Session.newGame(size, seed).withKeys("W:Q")); // pause one step off spawn
+        GameSnapshot loaded = Replay.replay(Session.load());
+        assertFalse(loaded.won, "a paused reload is not a win");
+        assertArrayEquals(fresh.goal, loaded.goal, "reloaded goal matches the pre-save derivation");
+        assertEquals(GOAL, loaded.rows[loaded.goal[1]][loaded.goal[0]],
+                "the reloaded world still shows the stamped goal tile");
+    }
+
+    @Test
     void goalLivesOnlyOnTheThreeCcPath() {
         for (long seed : new long[]{1, 2, 3}) {
             GameSnapshot snap = Replay.replay(Session.newGame(WorldSize.medium, seed));

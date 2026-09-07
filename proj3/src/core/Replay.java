@@ -29,7 +29,7 @@ public final class Replay {
         long seed;
         boolean saveMissing = false;
         if (load) {
-            world = RuntimeWorld.load();
+            world = RuntimeWorld.load(true); // sized rebuild + goal re-stamped (ADR-0005)
             seed = world.seed();
             saveMissing = isEmpty(world.snapshot());
         } else {
