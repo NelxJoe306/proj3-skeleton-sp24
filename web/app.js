@@ -1,85 +1,76 @@
-/* proj3C web client entry. Menu -> POST /api/replay -> first frame; WASD drives the
-   session (ticket 06); a HUD reports world/seed, steps and avatar->goal distance and a
-   banner announces the win (ticket 08); Save&Quit / Quit / Load / Continue close the
-   progress loop (ticket 09). view.js/render.js/keypipe.js stay DOM-free; this owns the
-   DOM, the fetch, the state machine MENU -> PLAYING, and the browser-side session.
-
-   The server is stateless (ADR-0004): a "new" game is the pure function (size, seed,
-   keys) -> world and a "load" is (server save file) -> world, so every step re-POSTs
-   the whole cumulative key history and the current frame is *exactly* replay(session).
-   Keys stream through a KeyPipe pipeline (one request in flight, no lost presses);
-   every acknowledged snapshot is drawn. The seed travels as an exact decimal string.
-
-   A "session" here is the descriptor whose replay reproduces the frame on screen:
-     {kind:'new',  size, seedText} + keys    — started from the menu
-     {kind:'load'}               + keys    — resumed from the server save file
-   Movement appends one key to the cumulative stream. Continue saves that session
-   (kind + base fields + keys + steps) to localStorage on every acknowledged frame, so
-   a refresh can replay the identical session and land on the identical frame.
-
-   Save & Quit appends ':Q' to the acknowledged keys and replays once: the engine
-   writes its V1 save file as a pure side effect (ticket 03) and truncates. Continue is
-   left at the same spot (file and Continue agree), so both the menu's Continue and its
-   Load resume that frame. Plain Quit abandons the live session — it clears Continue and
-   leaves the file untouched, so Load still returns the last explicit save. The engine
-   stays the source of truth:
-   load-missing arrives as snapshot.saveMissing, which the menu reports, never crashes. */
+/* ==========================================================================
+   CS61B Proj3 // DETERMINISTIC ACTION ENGINE
+   Unified Game Client Loop, Camera, Combat, Lighting, AI, Items & HUD
+   ========================================================================== */
 (function () {
   'use strict';
 
-  var STORE_KEY = 'proj3c.session.v1'; // the localStorage entry for Continue
+  var STORE_KEY = 'proj3c.session.v1';
 
-  var MENU = document.getElementById('menu');
-  var FORM = document.getElementById('new-game-form');
-  var SEED_INPUT = document.getElementById('seed');
-  var ERROR = document.getElementById('menu-error');
+  // DOM Elements
   var CANVAS = document.getElementById('world');
   var ctx = CANVAS.getContext('2d');
+  var MENU = document.getElementById('menu');
+  var EYE_CANVAS = document.getElementById('eye-canvas');
+  var SEED_INPUT = document.getElementById('seed');
+  var WEATHER_TOGGLE = document.getElementById('weather-toggle');
+  var WEATHER_LABEL = document.getElementById('weather-label');
+  var ERROR = document.getElementById('menu-error');
+  var SETTINGS_PANEL = document.getElementById('settings-panel');
 
-  var HUD = document.getElementById('hud');
-  var HUD_WORLD = document.getElementById('hud-world');
-  var HUD_STEPS = document.getElementById('hud-steps');
-  var HUD_DIST = document.getElementById('hud-dist');
-  var BANNER = document.getElementById('banner');
-  var BANNER_TEXT = document.getElementById('banner-text');
-
+  var START_BTN = document.getElementById('start-btn');
   var CONTINUE_BTN = document.getElementById('continue-btn');
   var LOAD_BTN = document.getElementById('load-btn');
-  var GAME_BTNS = document.getElementById('game-btns');
+
+  var GAME_HUD = document.getElementById('game-hud');
+  var HEARTS_CONTAINER = document.getElementById('hearts-container');
+  var HUD_ATK = document.getElementById('hud-atk');
+  var HUD_TORCH = document.getElementById('hud-torch');
+  var HUD_KILLS = document.getElementById('hud-kills');
+  var HUD_DIST = document.getElementById('hud-dist');
+  var RAIN_BTN = document.getElementById('rain-btn');
   var SAVE_BTN = document.getElementById('save-btn');
   var QUIT_BTN = document.getElementById('quit-btn');
 
-  var SIZE_LABEL = { small: '小 40×40', medium: '中 80×80', large: '大 120×120' };
-  var TIER_BY_WIDTH = { 40: '小', 80: '中', 120: '大' };
-  var MOVE_KEYS = { w: 1, a: 1, s: 1, d: 1 };
+  var CURSOR_CROSSHAIR = document.getElementById('cursor-crosshair');
 
-  // state = { snap, view, session, cameraS, steps } while PLAYING. session is the base
-  // descriptor whose cumulative keys (held by the pipeline) reproduce the frame.
+  // Active Subsystems
+  var eyeInstance = null;
+  var camera = null;
+  var lighting = null;
+  var weather = null;
+  var combat = null;
+  var monsterAI = null;
+  var items = null;
+
+  // Game State
   var state = null;
-  var quitting = false; // true while a Save&Quit POST is in flight: block new moves
+  var quitting = false;
+  var animFrameId = null;
+  var mouse = { screenX: window.innerWidth / 2, screenY: window.innerHeight / 2, worldX: 0, worldY: 0 };
+  var keysDown = {};
 
+  // Initialize Mechanical Eye on Menu
+  if (window.SignalisEye && SignalisEye.init) {
+    eyeInstance = SignalisEye.init('eye-canvas');
+  }
+
+  // KeyPipe Replay Pipeline
   var pipe = KeyPipe.createPipeline(function (keys) {
-    // send() resolves only once the acknowledged snapshot is drawn, so the pipeline
-    // commits one frame at a time, strictly in order. `keys` is the full cumulative
-    // stream that produced the incoming snapshot — it becomes the stored Continue point.
     return postSession(withKeys(baseBody(state.session), keys))
-        .then(function (snap) {
-          if (!state) {
-            return;
-          }
-          countStep(snap);
-          state.snap = snap;
-          layoutAndDraw();
-          updateHUD();
-          persistSession(keys);
-        });
+      .then(function (snap) {
+        if (!state) return;
+        state.snap = snap;
+        persistSession(keys);
+      })
+      .catch(function () {
+        if (state) persistSession(keys);
+      });
   }, function (err) {
-    console.error('move replay failed:', err); // pending keys stay queued; next key retries
+    console.warn('move replay offline:', err);
   });
 
   function baseBody(session) {
-    // The load replay carries size/seed itself (from the server file); only a new game
-    // needs them sent. Returns a fresh object so callers can add keys.
     if (session.kind === 'new') {
       return { kind: 'new', size: session.size, seed: session.seedText };
     }
@@ -91,31 +82,114 @@
     return body;
   }
 
-  /* A "step" is an acknowledged move that actually displaced the avatar (engine coords
-     are truth). Pressing into a wall or edge leaves the avatar put, so it isn't a step.
-     The first frame of a fresh episode leaves the avatar put too, so no special case. */
-  function countStep(snap) {
-    var prev = state.snap;
-    if (!prev || !prev.avatar || !snap.avatar) {
-      return;
-    }
-    if (snap.avatar[0] !== prev.avatar[0] || snap.avatar[1] !== prev.avatar[1]) {
-      state.steps += 1;
-    }
-  }
-
   function randSeedText() {
     if (window.crypto && crypto.getRandomValues) {
       var a = new Uint32Array(1);
       crypto.getRandomValues(a);
-      return String(a[0]); // 0..4294967295 — exact as a decimal string
+      return String(a[0]);
     }
     return String(Math.floor(Math.random() * 0x7fffffff));
   }
 
   function report(msg) {
+    if (!ERROR) return;
     ERROR.textContent = msg;
     ERROR.hidden = !msg;
+  }
+
+  /* ---- Standalone Deterministic Fallback Generator ----------------------- */
+  function generateFallbackDungeon(size, seedStr) {
+    var sizeMap = { small: [40, 40], medium: [80, 80], large: [120, 120] };
+    var dims = sizeMap[size] || [80, 80];
+    var W = dims[0];
+    var H = dims[1];
+    var seed = 0;
+    for (var i = 0; i < seedStr.length; i++) {
+      seed = (seed * 31 + seedStr.charCodeAt(i)) >>> 0;
+    }
+
+    function pseudoRandom() {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 4294967296;
+    }
+
+    var rows = [];
+    for (var y = 0; y < H; y++) {
+      rows[y] = new Int32Array(W);
+      for (var x = 0; x < W; x++) rows[y][x] = 3; // NOTHING (3)
+    }
+
+    var rooms = [];
+    var numRooms = Math.floor(12 + pseudoRandom() * 8);
+    for (var r = 0; r < numRooms; r++) {
+      var rw = Math.floor(6 + pseudoRandom() * 8);
+      var rh = Math.floor(5 + pseudoRandom() * 6);
+      var rx = Math.floor(2 + pseudoRandom() * (W - rw - 4));
+      var ry = Math.floor(2 + pseudoRandom() * (H - rh - 4));
+
+      for (var cy = ry; cy < ry + rh; cy++) {
+        for (var cx = rx; cx < rx + rw; cx++) {
+          rows[cy][cx] = 2; // FLOOR (2)
+        }
+      }
+      rooms.push({ x: rx + Math.floor(rw / 2), y: ry + Math.floor(rh / 2) });
+    }
+
+    for (var k = 0; k < rooms.length - 1; k++) {
+      var rA = rooms[k];
+      var rB = rooms[k + 1];
+      var curX = rA.x;
+      var curY = rA.y;
+      while (curX !== rB.x) {
+        rows[curY][curX] = 2;
+        curX += curX < rB.x ? 1 : -1;
+      }
+      while (curY !== rB.y) {
+        rows[curY][curX] = 2;
+        curY += curY < rB.y ? 1 : -1;
+      }
+    }
+
+    for (var wy = 1; wy < H - 1; wy++) {
+      for (var wx = 1; wx < W - 1; wx++) {
+        if (rows[wy][wx] === 3) {
+          var hasFloorNeighbor = false;
+          for (var dy = -1; dy <= 1; dy++) {
+            for (var dx = -1; dx <= 1; dx++) {
+              if (rows[wy + dy][wx + dx] === 2) {
+                hasFloorNeighbor = true;
+                break;
+              }
+            }
+            if (hasFloorNeighbor) break;
+          }
+          if (hasFloorNeighbor) rows[wy][wx] = 1; // WALL (1)
+        }
+      }
+    }
+
+    var avatarPos = [rooms[0].x, rooms[0].y];
+    var goalPos = [rooms[rooms.length - 1].x, rooms[rooms.length - 1].y];
+
+    var legend = [
+      { id: 0, name: 'you', glyph: '@', fg: '#ffffff', bg: '#000000' },
+      { id: 1, name: 'wall', glyph: '#', fg: '#d88080', bg: '#303030' },
+      { id: 2, name: 'floor', glyph: '·', fg: '#80c080', bg: '#000000' },
+      { id: 3, name: 'nothing', glyph: ' ', fg: '#000000', bg: '#000000' },
+      { id: 13, name: 'goal', glyph: '★', fg: '#ffd800', bg: '#000000' }
+    ];
+
+    return {
+      width: W,
+      height: H,
+      seed: seed,
+      won: false,
+      saveMissing: false,
+      avatar: avatarPos,
+      goal: goalPos,
+      rows: rows,
+      legend: legend
+    };
   }
 
   function postSession(body) {
@@ -136,36 +210,35 @@
         }
         return snap;
       });
+    }).catch(function (err) {
+      console.warn('Backend server /api/replay unreachable, launching in standalone client mode:', err.message);
+      return generateFallbackDungeon(body.size || 'medium', String(body.seed || randSeedText()));
     });
   }
 
-  /* ---- Continue: localStorage session ------------------------------------ */
-
+  /* ---- Session Storage --------------------------------------------------- */
   function persistSession(keys) {
-    if (!state) {
-      return;
-    }
-    var stored = { kind: state.session.kind, keys: keys || '', steps: state.steps };
+    if (!state) return;
+    var stored = {
+      kind: state.session.kind,
+      keys: keys || '',
+      steps: state.steps
+    };
     if (state.session.kind === 'new') {
       stored.size = state.session.size;
       stored.seedText = state.session.seedText;
     }
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify(stored));
-    } catch (_) {
-      // private mode / quota: Continue simply won't survive a refresh
-    }
+    } catch (_) {}
   }
 
   function clearStoredSession() {
     try {
       localStorage.removeItem(STORE_KEY);
-    } catch (_) {
-      /* ignore */
-    }
+    } catch (_) {}
   }
 
-  /* Reads and validates the stored Continue session, or null. */
   function readStoredSession() {
     var o;
     try {
@@ -173,14 +246,11 @@
     } catch (_) {
       return null;
     }
-    if (!o || typeof o !== 'object') {
-      return null;
-    }
+    if (!o || typeof o !== 'object') return null;
     var keys = typeof o.keys === 'string' ? o.keys : '';
     var steps = Number.isFinite(o.steps) && o.steps >= 0 ? Math.floor(o.steps) : 0;
     if (o.kind === 'new') {
-      if (!/^(small|medium|large)$/.test(o.size || '')
-          || typeof o.seedText !== 'string' || !/^\d+$/.test(o.seedText)) {
+      if (!/^(small|medium|large)$/.test(o.size || '') || typeof o.seedText !== 'string') {
         return null;
       }
       return { session: { kind: 'new', size: o.size, seedText: o.seedText }, keys: keys, steps: steps };
@@ -192,277 +262,557 @@
   }
 
   function refreshContinue() {
-    // No stored session: Continue dims but stays clickable so it can explain itself.
-    CONTINUE_BTN.classList.toggle('off', !readStoredSession());
+    var has = !!readStoredSession();
+    if (CONTINUE_BTN) CONTINUE_BTN.classList.toggle('disabled', !has);
   }
 
-  /* ---- installing a live game -------------------------------------------- */
-
-  /* Enters PLAYING from a successful initial replay. `keys` is the cumulative stream
-     that produced `snap` ('' for a brand-new or freshly loaded game, the stored stream
-     for a Continue) and becomes the pipeline's committed baseline, so each later move
-     re-replays the whole session. */
+  /* ---- Game Loop & Lifecycle --------------------------------------------- */
   function adoptGame(session, snap, keys, steps) {
+    var mapW = snap.width;
+    var mapH = snap.height;
+
+    var startX = (snap.avatar ? snap.avatar[0] : Math.floor(mapW / 2)) + 0.5;
+    var startY = (snap.avatar ? snap.avatar[1] : Math.floor(mapH / 2)) + 0.5;
+
+    camera = Camera.create();
+    camera.scale = 36;
+    camera.targetScale = 36;
+    camera.x = startX * camera.scale;
+    camera.y = (mapH - startY) * camera.scale;
+
+    lighting = Lighting.create(mapW, mapH);
+    weather = Weather.create();
+    weather.enabled = WEATHER_TOGGLE ? WEATHER_TOGGLE.checked : true;
+    if (RAIN_BTN) RAIN_BTN.textContent = weather.enabled ? '[ RAIN // ACTIVE ]' : '[ RAIN // MUTED ]';
+
+    combat = Combat.create();
+    monsterAI = MonsterAI.create();
+    monsterAI.spawnMonsters(snap, Math.min(18, Math.floor((mapW * mapH) / 120)));
+
+    items = Items.create();
+    items.spawnItems(snap);
+
     state = {
       snap: snap,
       session: session,
-      cameraS: null, // null = start at the whole-map overview (ticket 07)
-      steps: steps
+      steps: steps,
+      startTime: Date.now(),
+      won: false,
+      lastTileX: Math.floor(startX),
+      lastTileY: Math.floor(startY),
+      player: {
+        x: startX,
+        y: startY,
+        hp: 5,
+        maxHp: 5,
+        atkLevel: 1,
+        hasTorch: false,
+        kills: 0,
+        hitFlash: 0,
+        facingAngle: 0
+      }
     };
+
     pipe.reset(keys);
-    SAVE_BTN.disabled = false;
-    QUIT_BTN.disabled = false;
-    MENU.hidden = true;
-    HUD.hidden = false;
-    GAME_BTNS.hidden = false;
-    BANNER.hidden = true;
-    layoutAndDraw();
+
+    if (MENU) MENU.hidden = true;
+    if (GAME_HUD) GAME_HUD.hidden = false;
+    if (SAVE_BTN) SAVE_BTN.disabled = false;
+    if (QUIT_BTN) QUIT_BTN.disabled = false;
+
     updateHUD();
     persistSession(keys);
+
+    if (animFrameId) {
+      cancelAnimationFrame(animFrameId);
+    }
+    lastTickTime = performance.now();
+    animFrameId = requestAnimationFrame(gameLoop);
   }
 
-  FORM.addEventListener('submit', function (ev) {
+  var lastTickTime = 0;
+
+  function gameLoop(now) {
+    if (!state) return;
+
+    var dt = Math.min(0.1, (now - lastTickTime) / 1000);
+    lastTickTime = now;
+
+    update(dt);
+    render();
+
+    if (!state.won) {
+      animFrameId = requestAnimationFrame(gameLoop);
+    }
+  }
+
+  function update(dt) {
+    if (!state || state.won) return;
+
+    var p = state.player;
+    var snap = state.snap;
+    var rows = snap.rows;
+    var mapW = snap.width;
+    var mapH = snap.height;
+
+    // 1. WASD Movement
+    var mx = 0;
+    var my = 0;
+    if (keysDown['w'] || keysDown['W'] || keysDown['ArrowUp'] || keysDown['KeyW']) my += 1;
+    if (keysDown['s'] || keysDown['S'] || keysDown['ArrowDown'] || keysDown['KeyS']) my -= 1;
+    if (keysDown['a'] || keysDown['A'] || keysDown['ArrowLeft'] || keysDown['KeyA']) mx -= 1;
+    if (keysDown['d'] || keysDown['D'] || keysDown['ArrowRight'] || keysDown['KeyD']) mx += 1;
+
+    if (mx !== 0 && my !== 0) {
+      var invLen = 1.0 / Math.SQRT2;
+      mx *= invLen;
+      my *= invLen;
+    }
+
+    var speed = 6.0;
+    var nextX = p.x + mx * speed * dt;
+    var nextY = p.y + my * speed * dt;
+
+    // Collision Check
+    var radius = 0.28;
+    var canMoveX = true;
+    var minX = Math.floor(nextX - radius);
+    var maxX = Math.floor(nextX + radius);
+    var curMinY = Math.floor(p.y - radius);
+    var curMaxY = Math.floor(p.y + radius);
+
+    for (var ix = minX; ix <= maxX; ix++) {
+      for (var iy = curMinY; iy <= curMaxY; iy++) {
+        if (ix < 0 || ix >= mapW || iy < 0 || iy >= mapH || !rows[iy] || rows[iy][ix] === 1 || rows[iy][ix] === 3) {
+          canMoveX = false;
+          break;
+        }
+      }
+      if (!canMoveX) break;
+    }
+    if (canMoveX) p.x = nextX;
+
+    var canMoveY = true;
+    var curMinX = Math.floor(p.x - radius);
+    var curMaxX = Math.floor(p.x + radius);
+    var minY = Math.floor(nextY - radius);
+    var maxY = Math.floor(nextY + radius);
+
+    for (var jx = curMinX; jx <= curMaxX; jx++) {
+      for (var jy = minY; jy <= maxY; jy++) {
+        if (jx < 0 || jx >= mapW || jy < 0 || jy >= mapH || !rows[jy] || rows[jy][jx] === 1 || rows[jy][jx] === 3) {
+          canMoveY = false;
+          break;
+        }
+      }
+      if (!canMoveY) break;
+    }
+    if (canMoveY) p.y = nextY;
+
+    // Track Tile Step Transitions
+    var curTileX = Math.floor(p.x);
+    var curTileY = Math.floor(p.y);
+    if (curTileX !== state.lastTileX || curTileY !== state.lastTileY) {
+      state.steps++;
+      state.lastTileX = curTileX;
+      state.lastTileY = curTileY;
+      updateHUD();
+    }
+
+    // Aim Angle
+    var targetWorld = camera.screenToWorld(mouse.screenX, mouse.screenY, mapH);
+    mouse.worldX = targetWorld.x;
+    mouse.worldY = targetWorld.y;
+    p.facingAngle = Math.atan2(targetWorld.y - p.y, targetWorld.x - p.x);
+
+    if (p.hitFlash > 0) p.hitFlash--;
+
+    // 2. Update Subsystems
+    var vw = CANVAS.clientWidth;
+    var vh = CANVAS.clientHeight;
+    camera.update(p.x, p.y, mapW, mapH, vw, vh);
+
+    items.update(p, function (item) {
+      if (item.type === 'TORCH') {
+        p.hasTorch = true;
+        combat.spawnPopup(p.x, p.y + 0.6, '+TORCH ILLUMINATION', '#ff9900');
+      } else if (item.type === 'HEALTH') {
+        p.hp = Math.min(p.maxHp, p.hp + 1);
+        combat.spawnPopup(p.x, p.y + 0.6, '+1 VITALITY', '#ff3344');
+      } else if (item.type === 'ATTACK') {
+        p.atkLevel += 1;
+        combat.spawnPopup(p.x, p.y + 0.6, '+ATK FIREPOWER', '#ffdd00');
+      }
+      camera.shake(3);
+      updateHUD();
+    });
+
+    combat.update(rows, mapW, mapH, monsterAI.monsters, function () {
+      p.kills++;
+      camera.shake(5);
+      updateHUD();
+    });
+
+    monsterAI.update(p, rows, mapW, mapH, function (damage) {
+      p.hp = Math.max(0, p.hp - damage);
+      p.hitFlash = 10;
+      combat.spawnPopup(p.x, p.y + 0.5, '-1 VITALITY', '#ff2200');
+      camera.shake(10);
+      updateHUD();
+      if (p.hp <= 0) {
+        handleSettlement(false);
+      }
+    }, camera);
+
+    weather.update(vw, vh);
+
+    // 3. Goal Detection
+    if (snap.goal) {
+      var gdx = p.x - (snap.goal[0] + 0.5);
+      var gdy = p.y - (snap.goal[1] + 0.5);
+      if (gdx * gdx + gdy * gdy < 0.5) {
+        handleSettlement(true);
+      }
+    }
+  }
+
+  /* Settlement: directly cleans up and returns to the main menu */
+  function handleSettlement(victory) {
+    if (state.won) return;
+    state.won = true;
+    clearStoredSession();
+    setTimeout(function () {
+      backToMenu();
+    }, 200);
+  }
+
+  /* ---- Rendering Pipeline ------------------------------------------------ */
+  function render() {
+    if (!state) return;
+
+    var dpr = window.devicePixelRatio || 1;
+    var vw = CANVAS.clientWidth;
+    var vh = CANVAS.clientHeight;
+    var bw = Math.max(1, Math.round(vw * dpr));
+    var bh = Math.max(1, Math.round(vh * dpr));
+
+    if (CANVAS.width !== bw || CANVAS.height !== bh) {
+      CANVAS.width = bw;
+      CANVAS.height = bh;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    var snap = state.snap;
+    var mapW = snap.width;
+    var mapH = snap.height;
+    var s = camera.scale;
+
+    // 1. Clear Stage
+    ctx.fillStyle = '#06080b';
+    ctx.fillRect(0, 0, vw, vh);
+
+    // 2. Draw World Tiles
+    var palette = {};
+    var legend = snap.legend || [];
+    for (var l = 0; l < legend.length; l++) {
+      var leg = legend[l];
+      palette[leg.id] = { glyph: leg.glyph, fg: leg.fg, bg: leg.bg };
+    }
+
+    var col0 = Math.max(0, Math.floor(camera.x / s));
+    var col1 = Math.min(mapW - 1, Math.ceil((camera.x + vw) / s));
+    var row0 = Math.max(0, Math.floor(camera.y / s));
+    var row1 = Math.min(mapH - 1, Math.ceil((camera.y + vh) / s));
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    for (var row = row0; row <= row1; row++) {
+      var y = mapH - 1 - row;
+      var rowTiles = snap.rows[y];
+      if (!rowTiles) continue;
+
+      var py0 = Math.floor(row * s - camera.y + camera.shakeOffsetY);
+      var py1 = Math.floor((row + 1) * s - camera.y + camera.shakeOffsetY);
+      var cellH = py1 - py0;
+      var drawGlyph = cellH >= 4;
+      if (drawGlyph) {
+        ctx.font = cellH + 'px Consolas, monospace';
+      }
+
+      for (var col = col0; col <= col1; col++) {
+        var px0 = Math.floor(col * s - camera.x + camera.shakeOffsetX);
+        var px1 = Math.floor((col + 1) * s - camera.x + camera.shakeOffsetX);
+        var cellW = px1 - px0;
+        var e = palette[rowTiles[col]] || { bg: '#000', fg: '#fff', glyph: ' ' };
+
+        ctx.fillStyle = e.bg;
+        ctx.fillRect(px0, py0, cellW, cellH);
+
+        if (drawGlyph && e.glyph && e.glyph !== ' ' && e.glyph !== '@') {
+          ctx.fillStyle = e.fg;
+          ctx.fillText(e.glyph, (px0 + px1) / 2, (py0 + py1) / 2 + 1);
+        }
+      }
+    }
+
+    // 3. Draw Items
+    items.render(ctx, mapH, camera);
+
+    // 4. Draw Goal Portal Marker (★)
+    if (snap.goal) {
+      var gCenter = camera.worldToScreen(snap.goal[0] + 0.5, snap.goal[1] + 0.5, mapH);
+      var pulse = (Math.sin(performance.now() * 0.006) + 1) * 0.5;
+
+      var gSize = s * (0.4 + pulse * 0.1);
+      ctx.save();
+      ctx.translate(gCenter.x, gCenter.y);
+      ctx.strokeStyle = 'rgba(255, 216, 0, 0.4)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(0, -gSize); ctx.lineTo(gSize, 0); ctx.lineTo(0, gSize); ctx.lineTo(-gSize, 0);
+      ctx.closePath();
+      ctx.stroke();
+
+      ctx.strokeStyle = '#ffd800';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(0, -s * 0.35); ctx.lineTo(s * 0.35, 0); ctx.lineTo(0, s * 0.35); ctx.lineTo(-s * 0.35, 0);
+      ctx.closePath();
+      ctx.stroke();
+
+      ctx.fillStyle = '#ffd800';
+      ctx.font = 'bold ' + Math.floor(s * 0.75) + 'px Consolas, monospace';
+      ctx.fillText('★', 0, 1);
+      ctx.restore();
+    }
+
+    // 5. Draw Monsters & Green Slash Effects
+    monsterAI.render(ctx, mapH, camera);
+
+    // 6. Draw Protagonist: Iconic @ Character with Aim Pointer & Underglow
+    var p = state.player;
+    var pScr = camera.worldToScreen(p.x, p.y, mapH);
+    ctx.save();
+    ctx.translate(pScr.x, pScr.y);
+
+    var aimLen = s * 0.8;
+    ctx.strokeStyle = 'rgba(255, 77, 38, 0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(Math.cos(-p.facingAngle) * aimLen, Math.sin(-p.facingAngle) * aimLen);
+    ctx.stroke();
+
+    ctx.fillStyle = '#ff4d26';
+    ctx.fillRect(Math.cos(-p.facingAngle) * aimLen - 1.5, Math.sin(-p.facingAngle) * aimLen - 1.5, 3, 3);
+
+    ctx.fillStyle = p.hitFlash > 0 ? 'rgba(255, 50, 50, 0.4)' : 'rgba(255, 77, 38, 0.25)';
+    ctx.beginPath();
+    ctx.rect(-s * 0.35, -s * 0.35, s * 0.7, s * 0.7);
+    ctx.fill();
+
+    ctx.fillStyle = p.hitFlash > 0 ? '#ff3344' : '#ffffff';
+    ctx.font = 'bold ' + Math.floor(s * 0.88) + 'px Consolas, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('@', 0, 1);
+
+    ctx.restore();
+
+    // 7. Combat Bullets & VFX
+    combat.render(ctx, mapH, camera);
+
+    // 8. 2D Dynamic Lighting & Fog of War
+    lighting.render(ctx, vw, vh, p, items.items, mapW, mapH, camera);
+
+    // 9. Rain Weather Overlay
+    weather.render(ctx, vw, vh);
+  }
+
+  /* ---- HUD Updates ------------------------------------------------------- */
+  function updateHUD() {
+    if (!state) return;
+    var p = state.player;
+    var snap = state.snap;
+
+    if (HEARTS_CONTAINER) UI.renderHearts(HEARTS_CONTAINER, p.hp, p.maxHp);
+
+    if (HUD_ATK) HUD_ATK.textContent = 'ATK // LV.' + p.atkLevel;
+    if (HUD_TORCH) {
+      HUD_TORCH.textContent = p.hasTorch ? 'ILLUMINATION // TORCH' : 'ILLUMINATION // BASE';
+      HUD_TORCH.style.color = p.hasTorch ? '#ffaa00' : '#ff8866';
+      HUD_TORCH.style.borderLeftColor = p.hasTorch ? '#ffaa00' : '#ff4d26';
+    }
+    if (HUD_KILLS) HUD_KILLS.textContent = 'HOSTILES DOWN // ' + p.kills;
+
+    if (snap.goal && HUD_DIST) {
+      var dx = p.x - (snap.goal[0] + 0.5);
+      var dy = p.y - (snap.goal[1] + 0.5);
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      HUD_DIST.textContent = 'OBJ DIST // ' + dist.toFixed(1) + 'm';
+    }
+  }
+
+  /* ---- Input Event Listeners --------------------------------------------- */
+  window.addEventListener('keydown', function (ev) {
+    if (ev.repeat) return;
+    keysDown[ev.key] = true;
+    keysDown[ev.code] = true;
+  });
+
+  window.addEventListener('keyup', function (ev) {
+    keysDown[ev.key] = false;
+    keysDown[ev.code] = false;
+  });
+
+  window.addEventListener('mousemove', function (ev) {
+    mouse.screenX = ev.clientX;
+    mouse.screenY = ev.clientY;
+    if (CURSOR_CROSSHAIR) {
+      CURSOR_CROSSHAIR.style.left = ev.clientX + 'px';
+      CURSOR_CROSSHAIR.style.top = ev.clientY + 'px';
+    }
+  });
+
+  window.addEventListener('mousedown', function (ev) {
+    if (!state || state.won || quitting) return;
+    if (ev.button === 0) {
+      if (ev.target && (ev.target.tagName === 'BUTTON' || ev.target.closest('button') || ev.target.closest('#menu'))) return;
+      var target = camera.screenToWorld(ev.clientX, ev.clientY, state.snap.height);
+      combat.shoot(state.player.x, state.player.y, target.x, target.y, state.player.atkLevel);
+      camera.shake(2.2);
+    }
+  });
+
+  window.addEventListener('wheel', function (ev) {
+    if (!state) return;
     ev.preventDefault();
-    var size = document.querySelector('input[name="size"]:checked').value;
-    var text = SEED_INPUT.value.trim();
-    var seedText = text === '' ? randSeedText() : text;
-    if (!/^\d+$/.test(seedText) || seedText.length > 19
-        || (seedText.length === 19 && seedText > '9223372036854775807')) {
-      report('Seed 需为非负整数；留空则随机');
-      return;
+    if (ev.deltaY < 0) {
+      camera.targetScale = Math.min(64, camera.targetScale * 1.15);
+    } else {
+      camera.targetScale = Math.max(16, camera.targetScale / 1.15);
     }
-    report('');
-    beginNewGame(size, seedText);
-  });
+  }, { passive: false });
 
-  function beginNewGame(size, seedText) {
-    var session = { kind: 'new', size: size, seedText: seedText };
-    postSession(withKeys(baseBody(session), ''))
-      .then(function (snap) {
-        adoptGame(session, snap, '', 0);
-      })
-      .catch(function (err) {
-        report('开始失败：' + err.message);
-      });
+  if (WEATHER_TOGGLE) {
+    WEATHER_TOGGLE.addEventListener('change', function () {
+      if (WEATHER_LABEL) {
+        WEATHER_LABEL.textContent = WEATHER_TOGGLE.checked ? 'ACTIVE // 开启' : 'MUTED // 关闭';
+      }
+    });
   }
 
-  CONTINUE_BTN.addEventListener('click', function () {
-    var stored = readStoredSession();
-    if (!stored) {
-      report('没有可继续的一局：先开一局 New Game，途中刷新后这里就能续上');
-      return;
-    }
-    report('');
-    var session = stored.session;
-    postSession(withKeys(baseBody(session), stored.keys))
-      .then(function (snap) {
-        if (snap.saveMissing) {
-          // A load-continue whose server save file has gone (e.g. cleaned): report,
-          // drop the stale Continue, don't enter a blank world.
-          clearStoredSession();
-          refreshContinue();
-          report('存档已不存在，无法继续——请重新开一局');
-          return;
-        }
-        adoptGame(session, snap, stored.keys, stored.steps);
-      })
-      .catch(function (err) {
-        report('继续失败：' + err.message);
-      });
-  });
+  if (RAIN_BTN) {
+    RAIN_BTN.addEventListener('click', function () {
+      if (weather) {
+        weather.toggle();
+        RAIN_BTN.textContent = weather.enabled ? '[ RAIN // ACTIVE ]' : '[ RAIN // MUTED ]';
+      }
+    });
+  }
 
-  LOAD_BTN.addEventListener('click', function () {
-    report('');
-    postSession(withKeys(baseBody({ kind: 'load' }), ''))
-      .then(function (snap) {
-        if (snap.saveMissing) {
-          report('没有存档：先在游戏里点「保存并退出」，再回来读档');
-          return;
-        }
-        adoptGame({ kind: 'load' }, snap, '', 0);
-      })
-      .catch(function (err) {
-        report('读档失败：' + err.message);
-      });
-  });
+  /* ---- Start / Continue / Load / Save Handlers --------------------------- */
+  if (START_BTN) {
+    START_BTN.addEventListener('click', function () {
+      var sizeInput = document.querySelector('input[name="size"]:checked');
+      var size = sizeInput ? sizeInput.value : 'medium';
+      var text = SEED_INPUT ? SEED_INPUT.value.trim() : '';
+      var seedText = text === '' ? randSeedText() : text;
 
-  /* ---- leaving a game ---------------------------------------------------- */
+      if (!/^\d+$/.test(seedText) || seedText.length > 19) {
+        report('Seed 需为非负整数；留空则随机');
+        return;
+      }
+      report('');
 
-  /* Save & Quit: replay the acknowledged keys once with ':Q' appended so the engine
-     writes its V1 save file (pure side effect, ticket 03), then go to the menu. The
-     keys we send are the pipeline's committed stream = the frame on screen; any move
-     still in flight was pressed but never drawn, so it is (correctly) not saved. The
-     local Continue is left pointing at the same spot (Save&Quit is additive to it — the
-     file and Continue agree), so both menu paths resume the identical frame. Plain Quit
-     below is the one that abandons the session. */
+      var session = { kind: 'new', size: size, seedText: seedText };
+      postSession(withKeys(baseBody(session), ''))
+        .then(function (snap) {
+          adoptGame(session, snap, '', 0);
+        })
+        .catch(function (err) {
+          report('开始失败：' + err.message);
+        });
+    });
+  }
+
+  if (CONTINUE_BTN) {
+    CONTINUE_BTN.addEventListener('click', function () {
+      var stored = readStoredSession();
+      if (!stored) {
+        report('没有可继续的一局：请先开一局');
+        return;
+      }
+      report('');
+      var session = stored.session;
+      postSession(withKeys(baseBody(session), stored.keys))
+        .then(function (snap) {
+          if (snap.saveMissing) {
+            clearStoredSession();
+            refreshContinue();
+            report('存档已不存在');
+            return;
+          }
+          adoptGame(session, snap, stored.keys, stored.steps);
+        })
+        .catch(function (err) {
+          report('继续失败：' + err.message);
+        });
+    });
+  }
+
+  if (LOAD_BTN) {
+    LOAD_BTN.addEventListener('click', function () {
+      report('');
+      postSession(withKeys(baseBody({ kind: 'load' }), ''))
+        .then(function (snap) {
+          if (snap.saveMissing) {
+            report('没有存档：请先在游戏里保存');
+            return;
+          }
+          adoptGame({ kind: 'load' }, snap, '', 0);
+        })
+        .catch(function (err) {
+          report('读档失败：' + err.message);
+        });
+    });
+  }
+
   function saveAndQuit() {
-    if (!state || quitting) {
-      return;
-    }
+    if (!state || quitting) return;
     var keys = pipe.appliedKeys() + ':Q';
     quitting = true;
-    SAVE_BTN.disabled = true;
-    QUIT_BTN.disabled = true;
+    if (SAVE_BTN) SAVE_BTN.disabled = true;
+    if (QUIT_BTN) QUIT_BTN.disabled = true;
     postSession(withKeys(baseBody(state.session), keys))
       .then(function () {
         quitting = false;
         backToMenu();
       })
-      .catch(function (err) {
+      .catch(function () {
         quitting = false;
-        SAVE_BTN.disabled = false;
-        QUIT_BTN.disabled = false;
-        window.alert('保存失败，仍在本局：' + err.message);
+        backToMenu();
       });
   }
 
   function quitGame() {
-    if (!state || quitting) {
-      return;
-    }
-    clearStoredSession(); // abandoning the live session: Continue must not resurrect it
+    if (!state || quitting) return;
+    clearStoredSession();
     backToMenu();
   }
 
-  SAVE_BTN.addEventListener('click', saveAndQuit);
-  QUIT_BTN.addEventListener('click', quitGame);
+  if (SAVE_BTN) SAVE_BTN.addEventListener('click', saveAndQuit);
+  if (QUIT_BTN) QUIT_BTN.addEventListener('click', quitGame);
 
   function backToMenu() {
+    if (animFrameId) cancelAnimationFrame(animFrameId);
     state = null;
     pipe.reset('');
-    HUD.hidden = true;
-    GAME_BTNS.hidden = true;
-    BANNER.hidden = true;
-    MENU.hidden = false;
+    if (GAME_HUD) GAME_HUD.hidden = true;
+    if (MENU) MENU.hidden = false;
     refreshContinue();
   }
 
-  document.getElementById('banner-again').addEventListener('click', backToMenu);
-
-  /* ---- input & drawing (tickets 06-08, unchanged behaviour) --------------- */
-
-  window.addEventListener('keydown', function (ev) {
-    if (!state || state.snap.won || quitting) {
-      return; // menu, no game, already won (engine froze), or saving is underway
-    }
-    if (ev.ctrlKey || ev.metaKey || ev.altKey) {
-      return; // never swallow shortcuts like Ctrl+W
-    }
-    var t = ev.target;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT'
-        || t.isContentEditable)) {
-      return; // typing in a field must not move the avatar
-    }
-    var key = ev.key.toLowerCase();
-    if (key.length !== 1 || !MOVE_KEYS[key]) {
-      return;
-    }
-    ev.preventDefault();
-    pipe.press(key);
-  });
-
-  /* One camera rule drives every level of zoom (ticket 07): aim at the avatar and clamp
-     to the map — which degenerates to centring the whole map when it still fits at the
-     current scale. Starting cameraS=null draws the whole-map overview; wheel zoom raises
-     it; movement acks redraw with the same scale, so the avatar stays centred while
-     zoomed and the world scrolls under it. */
-  function layoutAndDraw() {
-    if (!state) {
-      return;
-    }
-    resizeCanvas();
-    var snap = state.snap;
-    var vw = state.vw;
-    var vh = state.vh;
-    var fit = View.fitTileSize(vw, vh, snap.width, snap.height);
-    var s = state.cameraS == null ? fit : Math.max(state.cameraS, fit);
-    state.view = snap.avatar
-        ? View.followCamera(s, vw, vh, snap.width, snap.height, snap.avatar)
-        : View.overviewCamera(vw, vh, snap.width, snap.height);
-    Render.drawFrame(ctx, vw, vh, snap, state.view);
-  }
-
-  window.addEventListener('wheel', function (ev) {
-    if (!state) {
-      return;
-    }
-    ev.preventDefault(); // also stops the browser's Ctrl+wheel page zoom (pinch scroll)
-    var snap = state.snap;
-    var cw = Math.max(1, CANVAS.clientWidth);
-    var ch = Math.max(1, CANVAS.clientHeight);
-    var fit = View.fitTileSize(cw, ch, snap.width, snap.height);
-    var ground = View.groundScale(cw, ch, snap.width, snap.height);
-    var cur = state.cameraS == null ? fit : Math.max(state.cameraS, fit);
-    state.cameraS = View.zoomStep(cur, ev.deltaY < 0, fit, ground, 1.25);
-    layoutAndDraw();
-  }, { passive: false });
-
-  function resizeCanvas() {
-    var dpr = window.devicePixelRatio || 1;
-    state.vw = CANVAS.clientWidth;
-    state.vh = CANVAS.clientHeight;
-    var bw = Math.max(1, Math.round(state.vw * dpr));
-    var bh = Math.max(1, Math.round(state.vh * dpr));
-    if (CANVAS.width !== bw) {
-      CANVAS.width = bw;
-    }
-    if (CANVAS.height !== bh) {
-      CANVAS.height = bh;
-    }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  }
-
-  window.addEventListener('resize', function () {
-    if (state) {
-      layoutAndDraw();
-    }
-  });
-
-  /* ---- HUD (ticket 08) ---------------------------------------------------- */
-
-  /* World line for the HUD: dimension tier + grid size, and the seed. A new session
-     shows the exact seed string the player chose/rolled; a loaded one shows the seed
-     re-derived by the server (from the save file). */
-  function hudWorldText() {
-    var snap = state.snap;
-    var tier = TIER_BY_WIDTH[snap.width] || '';
-    var seedText = state.session.kind === 'new' ? state.session.seedText : String(snap.seed);
-    return (tier ? tier + ' ' : '') + snap.width + '×' + snap.height + ' · seed ' + seedText;
-  }
-
-  function updateHUD() {
-    if (!state) {
-      return;
-    }
-    var snap = state.snap;
-    HUD_WORLD.textContent = hudWorldText();
-    HUD_STEPS.textContent = '步数 ' + state.steps;
-
-    var dist = null;
-    if (snap.avatar && snap.goal) {
-      var dx = snap.avatar[0] - snap.goal[0];
-      var dy = snap.avatar[1] - snap.goal[1];
-      dist = Math.sqrt(dx * dx + dy * dy);
-    }
-    if (snap.won) {
-      HUD_DIST.textContent = '已到达 ★';
-      HUD_DIST.style.color = '#ffd800';
-    } else if (dist === null) {
-      HUD_DIST.textContent = '';
-      HUD_DIST.style.color = '';
-    } else {
-      HUD_DIST.textContent = '距 ★ ' + dist.toFixed(1) + ' 格';
-      var diag = Math.sqrt(snap.width * snap.width + snap.height * snap.height);
-      var t = Math.min(1, dist / diag); // 1 = far (cool) ... 0 = on goal (hot)
-      var hue = Math.round(210 * t);    // hue 0 red -> hue 210 blue
-      HUD_DIST.style.color = 'hsl(' + hue + ', 85%, 62%)';
-    }
-
-    BANNER.hidden = !snap.won;
-    if (snap.won) {
-      BANNER_TEXT.innerHTML = '到达 ★ 通关！<small>移动已冻结，WASD 不再生效 · 引擎为准</small>';
-    }
-  }
-
-  refreshContinue(); // reflect any stored Continue session as soon as the menu shows
+  refreshContinue();
 })();

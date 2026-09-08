@@ -28,6 +28,14 @@
 - **stateless replay server** — 3C 的 web 后端形态：服务端不持有会话，每次请求由「会话串」（size+seed+已按按键，或 读档+已按按键）纯函数式重建 runtime world 快照返回；浏览器每按一键全量重放。引擎仍是唯一真相源、输入来源无关。
 - **session string / 会话串** — 浏览器持有的、完整决定当前一局的表示；stateless replay 服务与本地 headless 测试共用同一重放语义，故两者永不分叉。
 
+- **game loop（双时钟主循环）** — 客户端 60FPS 游戏时钟：FixedUpdate 负责逻辑帧（物理碰撞、弹道、AI 状态机），Render 负责插值平滑渲染，确保各显示器刷新率下的丝滑手感。
+- **fog of war / field of view（战争迷雾与视线）** — 迷雾渲染层：未探索区域全黑、已探索不在视线内为暗灰记忆区、视线内全亮。
+- **torch（火把实体）** — 地图中可探索拾取的道具实体；拾取后显著扩大玩家自身的移动动态光晕半径。
+- **signalis ui & crt post-processing** — 工业复古科幻美学：暗红/亮橙单色高反差框线排版、机械巨眼开场像素动画、全局像素 CRT 扫描线与准星后处理。
+- **pixel combat & juice** — 纯像素打击反馈系统：主角白黄能量光束粒子弹道、怪物绿色月牙挥砍（Slash VFX）、受击白闪（Hit Flash）、屏幕震动（Screen Shake）、伤害抛物线飘字。
+- **pixel hud & hearts** — 经典像素爱心血量容器 + 状态仪表盘。
+- **rain weather mode（雨天模式）** — 可选的全屏像素雨滴粒子系统 + 落地溅射水花。
+
 ## 关键区分
 
 - **结构**（seed → 完全确定）vs **运行时状态**（可变，随存档走）——两者永不混写。

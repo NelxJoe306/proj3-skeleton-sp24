@@ -3,58 +3,117 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>proj3C — BYOW in the browser</title>
+  <title>CS61B Proj3</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div id="stage">
+    <!-- Main Game Canvas -->
     <canvas id="world"></canvas>
 
-    <section id="menu" role="dialog" aria-label="主菜单">
-      <h1>proj3C <span class="sub">BYOW in the browser</span></h1>
-      <div class="resume-actions">
-        <button id="continue-btn" type="button" class="secondary">继续 Continue</button>
-        <button id="load-btn" type="button" class="secondary">读档 Load</button>
-      </div>
-      <p class="resume-note">刷新/关闭后回来点「继续」可续上一局；「读档」读取最近一次「保存并退出」留下的存档。</p>
-      <div class="divider"></div>
-      <form id="new-game-form">
-        <fieldset>
-          <legend>地图尺寸 Size</legend>
-          <div class="size-options">
-            <label><input type="radio" name="size" value="small">小 40×40</label>
-            <label><input type="radio" name="size" value="medium" checked>中 80×80</label>
-            <label><input type="radio" name="size" value="large">大 120×120</label>
-          </div>
-        </fieldset>
-        <div class="field-row">
-          <label for="seed">种子 Seed（留空则随机）</label>
-          <input id="seed" name="seed" type="text" inputmode="numeric" autocomplete="off"
-                 placeholder="留空 = 随机">
+    <!-- CRT Scanlines & Screen Vignette Overlay -->
+    <div id="crt-overlay">
+      <div class="decal-cross decal-tl">+</div>
+      <div class="decal-cross decal-tr">+</div>
+      <div class="decal-cross decal-bl">+</div>
+      <div class="decal-cross decal-br">+</div>
+    </div>
+
+    <!-- Mouse Crosshair Element -->
+    <svg id="cursor-crosshair" viewBox="0 0 24 24" fill="none" stroke="#ff4d26" stroke-width="2">
+      <line x1="12" y1="2" x2="12" y2="7"/>
+      <line x1="12" y1="17" x2="12" y2="22"/>
+      <line x1="2" y1="12" x2="7" y2="12"/>
+      <line x1="17" y1="12" x2="22" y2="12"/>
+      <rect x="10" y="10" width="4" height="4" fill="#ff4d26"/>
+    </svg>
+
+    <!-- Main Menu -->
+    <section id="menu" role="dialog" aria-label="CS61B Proj3 主菜单">
+      <div class="menu-header">
+        <canvas id="eye-canvas" width="360" height="180"></canvas>
+        <div class="title-box">
+          <h1>CS61B Proj3</h1>
         </div>
-        <button type="submit">开始 New Game</button>
-        <p id="menu-error" class="error" hidden></p>
-      </form>
-      <p class="hint">WASD 移动 · 到达 ★ 过关（方向键将于后续加入）</p>
+      </div>
+
+      <!-- Vertical Clean Settings Panel -->
+      <div id="settings-panel" class="sig-panel">
+        <div class="settings-column">
+          <div class="setting-row">
+            <span class="setting-label">SIZE</span>
+            <div class="setting-options">
+              <label class="opt-btn"><input type="radio" name="size" value="small" hidden>40×40</label>
+              <label class="opt-btn"><input type="radio" name="size" value="medium" checked hidden>80×80</label>
+              <label class="opt-btn"><input type="radio" name="size" value="large" hidden>120×120</label>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <span class="setting-label">SEED</span>
+            <input id="seed" class="sig-input" type="text" autocomplete="off" placeholder="AUTO // 留空随机">
+          </div>
+
+          <div class="setting-row">
+            <span class="setting-label">RAIN</span>
+            <div class="setting-options">
+              <label class="opt-btn toggle-btn">
+                <input id="weather-toggle" type="checkbox" checked hidden>
+                <span id="weather-label">ACTIVE // 开启</span>
+              </label>
+            </div>
+          </div>
+        </div>
+        <p id="menu-error" class="error" style="color:#ff3344; font-size:12px; margin-top:8px;" hidden></p>
+      </div>
+
+      <!-- Navigation Action Buttons (No Manual) -->
+      <div class="menu-actions">
+        <button id="start-btn" type="button" class="sig-btn">
+          <span>《 开始 》</span>
+          <span class="en-label">BEGIN</span>
+        </button>
+        <button id="continue-btn" type="button" class="sig-btn">
+          <span>《 继续 》</span>
+          <span class="en-label">CONTINUE</span>
+        </button>
+        <button id="load-btn" type="button" class="sig-btn">
+          <span>《 读档 》</span>
+          <span class="en-label">LOAD</span>
+        </button>
+      </div>
     </section>
 
-    <div id="hud" hidden>
-      <span id="hud-world" class="stat"></span>
-      <span id="hud-steps" class="stat"></span>
-      <span id="hud-dist" class="stat"></span>
-    </div>
+    <!-- In-Game Top HUD -->
+    <div id="game-hud" hidden>
+      <div class="hud-left">
+        <!-- Hearts Row -->
+        <div id="hearts-container" class="hearts-row"></div>
+        <div class="hud-stats-row">
+          <span id="hud-atk" class="hud-badge">ATK // LV.1</span>
+          <span id="hud-torch" class="hud-badge">ILLUMINATION // BASE</span>
+          <span id="hud-kills" class="hud-badge">HOSTILES DOWN // 0</span>
+          <span id="hud-dist" class="hud-badge">OBJ DIST // --</span>
+        </div>
+      </div>
 
-    <div id="game-btns" hidden>
-      <button id="save-btn" type="button" title="把当前进度写入存档并回主菜单">保存并退出</button>
-      <button id="quit-btn" type="button" class="danger" title="不存档，回主菜单（放弃本局）">退出</button>
-    </div>
-
-    <div id="banner" hidden>
-      <p id="banner-text"></p>
-      <button id="banner-again" type="button">返回主菜单 Menu</button>
+      <div class="hud-right">
+        <button id="rain-btn" type="button" class="hud-btn">[ RAIN // ACTIVE ]</button>
+        <button id="save-btn" type="button" class="hud-btn">[ SAVE // SUSPEND ]</button>
+        <button id="quit-btn" type="button" class="hud-btn">[ ABANDON // QUIT ]</button>
+      </div>
     </div>
   </div>
 
+  <!-- Modular Game Engine Scripts -->
+  <script src="eye.js"></script>
+  <script src="camera.js"></script>
+  <script src="lighting.js"></script>
+  <script src="weather.js"></script>
+  <script src="combat.js"></script>
+  <script src="ai.js"></script>
+  <script src="items.js"></script>
+  <script src="ui.js"></script>
   <script src="view.js"></script>
   <script src="render.js"></script>
   <script src="keypipe.js"></script>
